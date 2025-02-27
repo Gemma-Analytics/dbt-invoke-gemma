@@ -823,7 +823,7 @@ def _structure_property_file_dict(location, resource_dict, columns_list):
     property_file_dict[resource_type_plural][0]['columns'] = list()
     for column in columns_list:
         column_dict = existing_columns_dict.get(
-            column, _get_property_column(column)
+            column, _get_property_column(column, resource_name)
         )
         property_file_dict[resource_type_plural][0]['columns'].append(
             column_dict
@@ -851,14 +851,21 @@ def _get_property_header(resource, resource_type, properties=None):
     return header_dict
 
 
-def _get_property_column(column_name):
+def _get_property_column(column_name, resource=None):
     """
     Create a dictionary representing column properties
 
     :param column_name: Name of column
+    :param resource: Name of the resource (model/table name)
     :return: A dictionary representing column properties
     """
-    column_dict = {'name': column_name, 'description': ""}
+    from ruamel.yaml.scalarstring import PreservedScalarString
+    doc_reference = f"{resource}__{column_name}" if resource else column_name
+    column_dict = {
+        'name': column_name,
+        'description': PreservedScalarString(f'{{{{ doc("{doc_reference}") }}}}'),
+        'data_tests': []
+    }
     return column_dict
 
 
