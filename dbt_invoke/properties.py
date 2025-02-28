@@ -123,6 +123,25 @@ def update(
         **common_dbt_kwargs,
     )
 
+    print(
+        "\n"
+        "\n"
+        "\n"
+        "To link the field to the doc snippet of the upstream models, use the following prompt for cursor AI "
+        "after passing the yml file and the sql file of the model as context:\n\n"
+         "\033[94m"  # Start blue color
+        "Check the yml file and the related query, if the field comes directly\n"
+        "from another table (without any type of change other than renaming the column),\n"
+        "update the yml file so that it uses the same doc snippet as the doc snipped in the description of the source field\n"
+        "from the source model yml file, check this file well, it is really important that the doc snippet is the same as the doc snippet \n"
+        "of the source field if the field is the same\n"
+        "Only change the doc snippets that have been created with the last edit of the file.\n"
+        "Make the change where needed even if the doc snippet in the field description exists and is not empty.\n"
+        "Give me the change immediately, do not wait for me to ask several times to change the file\n"
+        "\033[0m"  # Reset color
+        "\n"
+    )
+
 
 @task(
     help=_update_and_delete_help,

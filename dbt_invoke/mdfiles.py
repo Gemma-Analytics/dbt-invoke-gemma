@@ -11,8 +11,6 @@ from invoke import task
 
 from dbt_invoke.internal import _utils
 
-print("properties lala")
-
 _LOGGER = _utils.get_logger('dbt-invoke')
 _MACRO_NAME = '_log_columns_list'
 _SUPPORTED_RESOURCE_TYPES = {
@@ -122,6 +120,24 @@ def update(
         transformed_ls_results,
         threads=threads,
         **common_dbt_kwargs,
+    )
+    print(
+        "\n"
+        "\n"
+        "\n"
+        "To add the documentation to fields, use the following prompt for cursor AI \n"
+        "after passing the md file and the sql file of the model as context: \n"
+        "\033[94m"  # Start blue color
+        "Check the query for the sql model of this md file, and fill out the empty doc snippets\n"
+        " (only the empty doc snippets, do not edit the ones that already have content).\n"
+        "For each field the info should include:\n"
+        " - description\n"
+        " - column level lineage\n"
+        " - calculation or field logic (if the field is derived)\n"
+        "Check this file well, it is really important that the info is correct\n"
+        "Give me the change immediately, do not wait for me to ask several times to change the file\n"
+        "\033[0m"  # Reset color
+        "\n"
     )
 
 
@@ -381,6 +397,7 @@ def migrate(
                     _LOGGER.exception(
                         f"Failed to delete {str(existing_property_path.resolve())}"
                     )
+
 
 def _extract_resource_content(content, resource_name):
     """
@@ -747,8 +764,9 @@ def _structure_md_content(resource_dict, columns_list):
     :return: Formatted markdown content
     """
     resource_name = resource_dict['name']
-    content = []
-    
+
+    content = [""]
+
     for column in columns_list:
         content.extend([
             "",  # One blank line before docs
@@ -818,5 +836,9 @@ def _check_field_exists(content, field_name, resource_name):
     :param resource_name: Name of the resource
     :return: Boolean indicating if field exists
     """
-    pattern = rf"docs\s+{re.escape(resource_name)}__{re.escape(field_name)}"
+    pattern = rf"{{% docs {re.escape(resource_name)}__{re.escape(field_name)} %}}"
     return bool(re.search(pattern, content)) if content else False
+
+
+
+
