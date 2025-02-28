@@ -126,7 +126,11 @@ def update(
         "\n"
         "\n"
         "To add the documentation to fields, use the following prompt for cursor AI \n"
-        "after passing the md file and the sql file of the model as context: \n"
+        "after passing the following as context: \n"
+        "- the md file of the model\n"
+        "- the sql file of the model \n"
+        "\n"
+        "\n"
         "\033[94m"  # Start blue color
         "Check the query for the sql model of this md file, and fill out the empty doc snippets\n"
         " (only the empty doc snippets, do not edit the ones that already have content).\n"
@@ -134,7 +138,8 @@ def update(
         " - description\n"
         " - column level lineage\n"
         " - calculation or field logic (if the field is derived)\n"
-        "Check this file well, it is really important that the info is correct\n"
+        "Check this file well, it is really important that the info is correct.\n"
+        "Also, fill out ALL empty doc snippets, do not skip any fields.\n"
         "Give me the change immediately, do not wait for me to ask several times to change the file\n"
         "\033[0m"  # Reset color
         "\n"
