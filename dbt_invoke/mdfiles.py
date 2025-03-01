@@ -15,7 +15,6 @@ _LOGGER = _utils.get_logger('dbt-invoke')
 _MACRO_NAME = '_log_columns_list'
 _SUPPORTED_RESOURCE_TYPES = {
     'model': 'models',
-    'seed': 'seeds',
     'snapshot': 'snapshots',
     'analysis': 'analyses',
 }
@@ -353,10 +352,15 @@ def migrate(
 
     # Loop through the migration_map to perform the migration
     for existing_property_path, resource_list in migration_map.items():
-        # Read existing markdown content if it exists
-        existing_content = _read_md_file(existing_property_path) if existing_property_path.exists() else ""
-        
         for resource in resource_list:
+            # Create new path in _docs subfolder
+            model_path = resource['resource_path']
+            docs_folder = model_path.parent / f"_{model_path.parent.name}_docs"
+            docs_folder.mkdir(exist_ok=True)
+            
+            # Update property_path to be in the _docs folder
+            resource['property_path'] = docs_folder / model_path.name.replace('.sql', '.md')
+            
             # Skip if the properties are already in the correct location
             if existing_property_path == resource['property_path']:
                 continue
@@ -593,24 +597,18 @@ def _create_all_property_files(
 
 def _delete_all_property_files(ctx, transformed_ls_results):
     """
-    Delete property files in markdown format
-
-    :param ctx: An Invoke context object
-    :param transformed_ls_results: Dictionary where the key is the resource path
-    :return: None
+    Delete property files in markdown format from _docs subfolders
     """
-    resource_paths = [
-        Path(ctx.config['project_path'], resource_location)
-        for resource_location in transformed_ls_results
-    ]
-    property_paths = [
-        rp.with_suffix('.md')
-        for rp in resource_paths
-        if rp.with_suffix('.md').exists()
-    ]
+    property_paths = []
+    for resource_location in transformed_ls_results:
+        model_path = Path(ctx.config['project_path'], resource_location)
+        docs_folder = model_path.parent / f"_{model_path.parent.name}_docs"
+        property_path = docs_folder / model_path.name.replace('.sql', '.md')
+        if property_path.exists():
+            property_paths.append(property_path)
+    
     _LOGGER.info(
-        f'{len(property_paths)} of {len(resource_paths)}'
-        f' have existing property files'
+        f'{len(property_paths)} matching property files found'
     )
     
     if len(property_paths) > 0:
@@ -653,25 +651,33 @@ def _create_property_file(
     **kwargs,
 ):
     """
-    Create a property file in markdown format
-
-    :param ctx: An Invoke context object
-    :param resource_location: The location of the file representing the resource
-    :param resource_dict: A dictionary representing the json output for this resource
-    :param counter: An integer assigned to this file
-    :param total: An integer representing the total number of files to be created
-    :param kwargs: Additional arguments for _utils.dbt_run_operation
-    :return: None
+    Create a property file in markdown format in a _docs subfolder
     """
+    # Skip if resource is a seed
+    if resource_dict.get('resource_type') == 'seed':
+        _LOGGER.info(
+            f'{"[SKIP]":>{_PROGRESS_PADDING}}'
+            f' Resource {counter} of {total},'
+            f' {resource_location} (seed files are skipped)'
+        )
+        return
+
     _LOGGER.info(
         f'{"[START]":>{_PROGRESS_PADDING}}'
         f' Resource {counter} of {total},'
         f' {resource_location}'
     )
     columns = _get_columns(ctx, resource_location, resource_dict, **kwargs)
-    property_path = Path(
-        ctx.config['project_path'], resource_location
-    ).with_suffix('.md')
+    
+    # Get the model's directory path and create docs subfolder path
+    model_path = Path(ctx.config['project_path'], resource_location)
+    docs_folder = model_path.parent / f"_{model_path.parent.name}_docs"
+    
+    # Create the _docs folder if it doesn't exist
+    docs_folder.mkdir(exist_ok=True)
+    
+    # Set the property path to be inside the _docs folder
+    property_path = docs_folder / model_path.name.replace('.sql', '.md')
     
     # Check if file exists and read content
     existing_content = _read_md_file(property_path) if property_path.exists() else None

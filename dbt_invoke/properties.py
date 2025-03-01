@@ -15,7 +15,6 @@ _LOGGER = _utils.get_logger('dbt-invoke')
 _MACRO_NAME = '_log_columns_list'
 _SUPPORTED_RESOURCE_TYPES = {
     'model': 'models',
-    'seed': 'seeds',
     'snapshot': 'snapshots',
     'analysis': 'analyses',
 }
@@ -139,7 +138,7 @@ def update(
         "from the source model yml file, check this file well, it is really important that the doc snippet is the same as the doc snippet \n"
         "of the source field if the field is the same: -- USE THE SAME DOC SNIPPET AS THE DOC SNIPPET IN \n"
         "THE DESCRIPTION OF THE SOURCE FIELD IN THE SOURCE FIELD MODEL YML FILE!!\n"
-        "Only change the doc snippets that have been created with the last edit of the file.\n"
+        "Only change the doc snippets that have been changed with the last edit of the file.\n"
         "Make the change where needed even if the doc snippet in the field description exists and is not empty.\n"
         "Give me the change immediately, do not wait for me to ask several times to change the file\n"
         "\033[0m"  # Reset color
@@ -650,29 +649,20 @@ def _create_all_property_files(
 
 def _delete_all_property_files(ctx, transformed_ls_results):
     """
-    For each resource from dbt ls,
-    delete the property file if user confirms
-
-    :param ctx: An Invoke context object
-    :param transformed_ls_results: Dictionary where the key is the
-        resource path and the value is dictionary form of the
-        resource's json
-    :return: None
+    Delete property files in yaml format from _schemas subfolders
     """
-    resource_paths = [
-        Path(ctx.config['project_path'], resource_location)
-        for resource_location in transformed_ls_results
-    ]
-    property_paths = [
-        rp.with_suffix('.yml')
-        for rp in resource_paths
-        if rp.with_suffix('.yml').exists()
-    ]
+    property_paths = []
+    for resource_location in transformed_ls_results:
+        model_path = Path(ctx.config['project_path'], resource_location)
+        schemas_folder = model_path.parent / f"_{model_path.parent.name}_schemas"
+        property_path = schemas_folder / model_path.name.replace('.sql', '.yml')
+        if property_path.exists():
+            property_paths.append(property_path)
+    
     _LOGGER.info(
-        f'{len(property_paths)} of {len(resource_paths)}'
-        f' have existing property files'
+        f'{len(property_paths)} matching property files found'
     )
-    # Delete the selected property paths
+    
     if len(property_paths) > 0:
         deletion_message_yml_paths = '\n'.join(
             [str(property_path) for property_path in property_paths]
@@ -712,30 +702,35 @@ def _create_property_file(
     **kwargs,
 ):
     """
-    Create a property file
-
-    :param ctx: An Invoke context object
-    :param resource_location: The location of the file representing the
-        resource
-    :param resource_dict: A dictionary representing the json output for
-        this resource from the "dbt ls" command
-    :param counter: An integer assigned to this file (for logging the
-        progress of file creation)
-    :param total: An integer representing the total number of files to
-        be created (for logging the progress of file creation)
-    :param kwargs: Additional arguments for _utils.dbt_run_operation
-        (run "dbt run-operation --help" for details)
-    :return: None
+    Create a property file in a _schemas subfolder
     """
+    # Skip if resource is a seed
+    if resource_dict.get('resource_type') == 'seed':
+        _LOGGER.info(
+            f'{"[SKIP]":>{_PROGRESS_PADDING}}'
+            f' Resource {counter} of {total},'
+            f' {resource_location} (seed files are skipped)'
+        )
+        return
+
     _LOGGER.info(
         f'{"[START]":>{_PROGRESS_PADDING}}'
         f' Resource {counter} of {total},'
         f' {resource_location}'
     )
+    
     columns = _get_columns(ctx, resource_location, resource_dict, **kwargs)
-    property_path = Path(
-        ctx.config['project_path'], resource_location
-    ).with_suffix('.yml')
+    
+    # Get the model's directory path and create schemas subfolder path
+    model_path = Path(ctx.config['project_path'], resource_location)
+    schemas_folder = model_path.parent / f"_{model_path.parent.name}_schemas"
+    
+    # Create the _schemas folder if it doesn't exist
+    schemas_folder.mkdir(exist_ok=True)
+    
+    # Set the property path to be inside the _schemas folder
+    property_path = schemas_folder / model_path.name.replace('.sql', '.yml')
+    
     property_file_dict = _structure_property_file_dict(
         property_path,
         resource_dict,
