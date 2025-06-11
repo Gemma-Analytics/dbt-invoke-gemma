@@ -5,11 +5,11 @@ from pathlib import Path
 import ast
 from collections import defaultdict
 import json
+import re   
 
 from invoke import task
 
 from dbt_invoke.internal import _utils
-
 
 _LOGGER = _utils.get_logger('dbt-invoke')
 _MACRO_NAME = '_log_columns_list'
@@ -61,7 +61,6 @@ def update(
     log_level=None,
     threads=1,
 ):
-    print("I AM RUNNING")
     """
     Update property file(s) for the specified set of resources
 
@@ -121,25 +120,25 @@ def update(
         threads=threads,
         **common_dbt_kwargs,
     )
-
     print(
         "\n"
         "\n"
         "\n"
-        "To link the field to the doc snippet of the upstream models, use the following prompt for cursor AI "
-        "after passing the following as context:\n"
-        "- the yml file of the model\n"
+        "To add the documentation to fields, use the following prompt for cursor AI \n"
+        "after passing the following as context: \n"
+        "- the md file of the model\n"
         "- the sql file of the model \n"
         "\n"
-         "\033[94m"  # Start blue color
-        "Check the yml file and the related query, if the field comes directly\n"
-        "from another model [not a source table!!] (without any type of change other than renaming the column),\n"
-        "update the yml file so that it uses the same doc snippet as the doc snipped in the description of the source field\n"
-        "from the source model yml file, check this file well, it is really important that the doc snippet is the same as the doc snippet \n"
-        "of the source field if the field is the same: -- USE THE SAME DOC SNIPPET AS THE DOC SNIPPET IN \n"
-        "THE DESCRIPTION OF THE SOURCE FIELD IN THE SOURCE FIELD MODEL YML FILE!!\n"
-        "Only change the doc snippets that have been changed with the last edit of the file.\n"
-        "Make the change where needed even if the doc snippet in the field description exists and is not empty.\n"
+        "\n"
+        "\033[94m"  # Start blue color
+        "Check the query for the sql model of this md file, and fill out the empty doc snippets\n"
+        " (only the empty doc snippets, do not edit the ones that already have content).\n"
+        "For each field the info should include:\n"
+        " - description\n"
+        " - column level lineage\n"
+        " - calculation or field logic (if the field is derived)\n"
+        "Check this file well, it is really important that the info is correct.\n"
+        "Also, fill out ALL empty doc snippets, do not skip any fields.\n"
         "Give me the change immediately, do not wait for me to ask several times to change the file\n"
         "\033[0m"  # Reset color
         "\n"
@@ -303,10 +302,6 @@ def migrate(
         (DEBUG, INFO, WARNING, ERROR, CRITICAL)
     :return: None
     """
-    # Run _initiate_alterations to retrieve the locations of the
-    # resources for which properties will be migrated.
-    # Importantly, this also updates ctx to contain the dbt project
-    # path.
     _, transformed_ls_results = _initiate_alterations(
         ctx,
         resource_type=resource_type,
@@ -323,55 +318,26 @@ def migrate(
         state=state,
         log_level=log_level,
     )
-    # Parse nodes from the manifest file
+    
     nodes = _read_manifest(ctx['target_path'])['nodes']
-    # Create a migration_map dict to keep track of existing property
-    # files from which properties for one or more resources will be
-    # migrated. Structure of migration_map:
-    # {
-    #     <existing_property_path1>: [
-    #         {
-    #             'name': '<resource1_name>',
-    #             'resource_type': '<resource1_resource_type>',
-    #             'resource_type_plural': '<resource1_resource_type_plural>',
-    #             'resource_path': <Path of resource1>,
-    #             'property_path': <intended Path of resource1 properties>,
-    #         },
-    #         {
-    #             'name': '<resource2_name>',
-    #             ...
-    #         },
-    #         ...
-    #     ],
-    #     <existing_property_path2>: [
-    #         ...
-    #     ],
-    #     ...
-    # }
     migration_map = defaultdict(list)
-    # Using the nodes from the manifest create a data structure that
-    # keeps track of what existing yaml files we have and what
-    # resources are defined in each.
+    
     for node, metadata in nodes.items():
-        # Skip if node is not a selected node.
-        # This is not only for efficiency, but also to confirm that the
-        # node comes from the correct dbt project
-        # (transformed_ls_results should already only contain nodes from
-        # the correct dbt project).
         if metadata['original_file_path'] not in transformed_ls_results:
             continue
-        # Skip if node is not present in any existing property file
         elif not metadata.get('patch_path'):
             continue
+            
         existing_property_path = Path(
             ctx.config['project_path'],
             metadata.get('patch_path').split('//')[-1],
-        )
+        ).with_suffix('.md')  # Change to .md extension
+        
         resource_path = Path(
             ctx.config['project_path'],
             metadata['original_file_path'],
         )
-        # Add data for to-be-created property files to the migration_map
+        
         migration_map[existing_property_path].append(
             {
                 'name': metadata['name'],
@@ -380,104 +346,86 @@ def migrate(
                     metadata['resource_type']
                 ),
                 'resource_path': resource_path,
-                'property_path': resource_path.with_suffix('.yml'),
+                'property_path': resource_path.with_suffix('.md'),
             }
         )
+
     # Loop through the migration_map to perform the migration
     for existing_property_path, resource_list in migration_map.items():
-        # Keep track of items to remove from the existing property file
-        indices_to_remove = defaultdict(list)
-        # Create a set of the resource types for which at least one
-        # resource will be migrated from the existing property file
-        relevant_resource_types_plural = set(
-            [resource['resource_type_plural'] for resource in resource_list]
-        )
-        # Read each relevant property file once to keep things speedy
-        existing_property_file_dict = _utils.parse_yaml(existing_property_path)
-        # For each relevant resource type for this migration, collect
-        # the properties and index position of all resources within the
-        # existing property file
-        existing_properties = {
-            properties['name']: {
-                'resource_type_plural': k,
-                'index': i,
-                'properties': properties,
-            }
-            for k, v in existing_property_file_dict.items()
-            if k in relevant_resource_types_plural
-            for i, properties in enumerate(v)
-        }
-        # For each resource within the existing property path in the
-        # migration_map copy the properties to their intended
-        # destination
         for resource in resource_list:
+            # Create new path in _docs subfolder
+            model_path = resource['resource_path']
+            docs_folder = model_path.parent / f"_{model_path.parent.name}_docs"
+            docs_folder.mkdir(exist_ok=True)
+            
+            # Update property_path to be in the _docs folder
+            resource['property_path'] = docs_folder / model_path.name.replace('.sql', '.md')
+            
             # Skip if the properties are already in the correct location
             if existing_property_path == resource['property_path']:
                 continue
+                
             _LOGGER.info(
                 f"""Moving "{resource['name']}" definition from"""
                 f""" {str(existing_property_path.resolve())} to"""
                 f""" {str(resource['property_path'].resolve())}"""
             )
-            # Try to create the new property file. Upon success, save
-            # the index of the resource to remove from the migration
-            # property file.
+            
             try:
-                property_file_dict = _get_property_header(
-                    resource['name'],
-                    resource['resource_type'],
-                    existing_properties[resource['name']]['properties'],
-                )
-                _utils.write_yaml(
-                    resource['property_path'],
-                    property_file_dict,
-                    mode='x',
-                )
-                indices_to_remove[resource['resource_type_plural']].append(
-                    existing_properties[resource['name']]['index']
-                )
+                # Extract resource information from existing content if possible
+                resource_content = _extract_resource_content(existing_content, resource['name'])
+                
+                if not resource_content:
+                    # If no existing content found, create new markdown structure
+                    columns = _get_columns(
+                        ctx,
+                        str(resource['resource_path']),
+                        {'name': resource['name'], 'resource_type': resource['resource_type'], 'config': {'materialized': 'table'}},
+                    )
+                    resource_content = _structure_md_content(resource, columns or [])
+                
+                # Write the new markdown file
+                _write_md_file(resource['property_path'], resource_content)
                 _LOGGER.info(f"Created {resource['property_path']}")
+                
             except Exception:
                 _LOGGER.exception(
                     f"Failed to create {resource['property_path']}"
                 )
-        # Remove migrated resources from migration_property_file_dict
-        removed_counter = 0
-        for resource_type_plural, indices in indices_to_remove.items():
-            for i in sorted(indices, reverse=True):
-                existing_property_file_dict[resource_type_plural].pop(i)
-                removed_counter += 1
-            # Remove resource type heading if it no longer contains any
-            # resources
-            if len(existing_property_file_dict[resource_type_plural]) == 0:
-                existing_property_file_dict.pop(resource_type_plural)
-        # Overwrite the migration property file with its remaining
-        # post-migration contents.
-        try:
-            _utils.write_yaml(
-                existing_property_path,
-                existing_property_file_dict,
-            )
-            _LOGGER.info(
-                f'Removed {str(removed_counter)} migrated resources from'
-                f' {str(existing_property_path.resolve())}'
-            )
-        except Exception:
-            _LOGGER.exception(
-                f"Failed to update {str(existing_property_path.resolve())}"
-            )
-        # Delete the existing property file if it only contains version info
-        if existing_property_path.read_text().strip().lower() == "version: 2":
-            try:
-                existing_property_path.unlink()
-                _LOGGER.info(
-                    f"Deleted {str(existing_property_path.resolve())}"
-                )
-            except Exception:
-                _LOGGER.exception(
-                    f"Failed to delete {str(existing_property_path.resolve())}"
-                )
-        _LOGGER.info('Migration successful')
+
+        # Remove the original file if it's empty or only contains headers
+        if existing_property_path.exists():
+            remaining_content = _read_md_file(existing_property_path)
+            if not remaining_content or remaining_content.strip() == "":
+                try:
+                    existing_property_path.unlink()
+                    _LOGGER.info(
+                        f"Deleted {str(existing_property_path.resolve())}"
+                    )
+                except Exception:
+                    _LOGGER.exception(
+                        f"Failed to delete {str(existing_property_path.resolve())}"
+                    )
+
+
+def _extract_resource_content(content, resource_name):
+    """
+    Extract content for a specific resource from markdown content
+    
+    :param content: Full markdown content
+    :param resource_name: Name of the resource to extract
+    :return: Extracted content for the resource or None if not found
+    """
+    if not content:
+        return None
+        
+    # Find the section for this resource
+    pattern = rf"#\s*{re.escape(resource_name)}.*?(?=\n#\s*[^#]|\Z)"
+    match = re.search(pattern, content, re.DOTALL)
+    
+    if match:
+        return match.group(0).strip()
+    return None
 
 
 def _initiate_alterations(ctx, **kwargs):
@@ -649,13 +597,13 @@ def _create_all_property_files(
 
 def _delete_all_property_files(ctx, transformed_ls_results):
     """
-    Delete property files in yaml format from _schemas subfolders
+    Delete property files in markdown format from _docs subfolders
     """
     property_paths = []
     for resource_location in transformed_ls_results:
         model_path = Path(ctx.config['project_path'], resource_location)
-        schemas_folder = model_path.parent / f"_{model_path.parent.name}_schemas"
-        property_path = schemas_folder / model_path.name.replace('.sql', '.yml')
+        docs_folder = model_path.parent / f"_{model_path.parent.name}_docs"
+        property_path = docs_folder / model_path.name.replace('.sql', '.md')
         if property_path.exists():
             property_paths.append(property_path)
     
@@ -664,7 +612,7 @@ def _delete_all_property_files(ctx, transformed_ls_results):
     )
     
     if len(property_paths) > 0:
-        deletion_message_yml_paths = '\n'.join(
+        deletion_message_md_paths = '\n'.join(
             [str(property_path) for property_path in property_paths]
         )
         deletion_message_prefix = '\nThe following files will be deleted:\n\n'
@@ -674,15 +622,16 @@ def _delete_all_property_files(ctx, transformed_ls_results):
         )
         deletion_confirmation = input(
             f'{deletion_message_prefix}'
-            f'{deletion_message_yml_paths}'
+            f'{deletion_message_md_paths}'
             f'{deletion_message_suffix}'
         )
-        # User confirmation
+        
         while deletion_confirmation.lower() not in ['y', 'n']:
             deletion_confirmation = input(
                 '\nPlease enter "y" to confirm deletion'
                 ' or "n" to abort deletion.\n'
             )
+        
         if deletion_confirmation.lower() == 'y':
             for file in property_paths:
                 os.remove(file)
@@ -702,7 +651,7 @@ def _create_property_file(
     **kwargs,
 ):
     """
-    Create a property file in a _schemas subfolder
+    Create a property file in markdown format in a _docs subfolder
     """
     # Skip if resource is a seed
     if resource_dict.get('resource_type') == 'seed':
@@ -718,28 +667,39 @@ def _create_property_file(
         f' Resource {counter} of {total},'
         f' {resource_location}'
     )
-    
     columns = _get_columns(ctx, resource_location, resource_dict, **kwargs)
     
-    # Get the model's directory path and create schemas subfolder path
+    # Get the model's directory path and create docs subfolder path
     model_path = Path(ctx.config['project_path'], resource_location)
-    schemas_folder = model_path.parent / f"_{model_path.parent.name}_schemas"
+    docs_folder = model_path.parent / f"_{model_path.parent.name}_docs"
     
-    # Create the _schemas folder if it doesn't exist
-    schemas_folder.mkdir(exist_ok=True)
+    # Create the _docs folder if it doesn't exist
+    docs_folder.mkdir(exist_ok=True)
     
-    # Set the property path to be inside the _schemas folder
-    property_path = schemas_folder / model_path.name.replace('.sql', '.yml')
+    # Set the property path to be inside the _docs folder
+    property_path = docs_folder / model_path.name.replace('.sql', '.md')
     
-    property_file_dict = _structure_property_file_dict(
-        property_path,
-        resource_dict,
-        columns,
-    )
-    _utils.write_yaml(
-        property_path,
-        property_file_dict,
-    )
+    # Check if file exists and read content
+    existing_content = _read_md_file(property_path) if property_path.exists() else None
+    
+    # If file doesn't exist or is empty, create new content
+    if not existing_content:
+        content = _structure_md_content(resource_dict, columns)
+    else:
+        # Update existing content with new columns
+        new_content = []
+        for column in columns:
+            if not _check_field_exists(existing_content, column, resource_dict['name']):
+                new_content.extend([
+                    "",  # One blank line before docs
+                    f"{{% docs {resource_dict['name']}__{column} %}}",
+                    "",
+                    "{% enddocs %}",
+                    ""  # One blank line after docs
+                ])
+        content = existing_content.rstrip() + "\n" + "\n".join(new_content) if new_content else existing_content
+    
+    _write_md_file(property_path, content)
 
 
 def _get_columns(ctx, resource_location, resource_dict, **kwargs):
@@ -806,87 +766,28 @@ def _get_columns(ctx, resource_location, resource_dict, **kwargs):
         return columns
 
 
-def _structure_property_file_dict(location, resource_dict, columns_list):
+def _structure_md_content(resource_dict, columns_list):
     """
-    Structure a dictionary that will be used to create a property file
-
-    :param location: The location in which to create the property file
-    :param resource_dict: A dictionary representing the json output for
-        this resource from the "dbt ls" command
-    :param columns_list: A list of columns to include in the
-        property file
-    :return: None
+    Structure markdown content for a resource with docs templates
+    
+    :param resource_dict: Dictionary containing resource information
+    :param columns_list: List of columns
+    :return: Formatted markdown content
     """
-    resource_type = resource_dict['resource_type']
     resource_name = resource_dict['name']
-    # If the property file already exists, read it into a dictionary.
-    if location.exists():
-        property_file_dict = _utils.parse_yaml(location)
-        # check if properties files has content
-        if not property_file_dict:
-            property_file_dict = _get_property_header(
-                resource_name, resource_type
-            )
-    # Else create a new dictionary that
-    # will be used to create a new property file.
-    else:
-        property_file_dict = _get_property_header(resource_name, resource_type)
-    # Get the sub-dictionaries of each existing column
-    resource_type_plural = _SUPPORTED_RESOURCE_TYPES[resource_type]
-    existing_columns_dict = {
-        item['name']: item
-        for item in property_file_dict[resource_type_plural][0]['columns']
-    }
-    # For each column we want in the property file,
-    # reuse the sub-dictionary if it exists
-    # or else create a new sub-dictionary
-    property_file_dict[resource_type_plural][0]['columns'] = list()
+
+    content = [""]
+
     for column in columns_list:
-        column_dict = existing_columns_dict.get(
-            column, _get_property_column(column, resource_name)
-        )
-        property_file_dict[resource_type_plural][0]['columns'].append(
-            column_dict
-        )
-    return property_file_dict
-
-
-def _get_property_header(resource, resource_type, properties=None):
-    """
-    Create a dictionary representing resources properties
-
-    :param resource: The name of the resource for which to create a
-        property header
-    :param resource_type: The type of the resource (model, seed, etc.)
-    :param properties: Dictionary containing existing properties to
-        which to add a header (name, description, columns, etc.)
-    :return: A dictionary representing resource properties
-    """
-    if not properties:
-        properties = {'name': resource, 'description': "", 'columns': []}
-    header_dict = {
-        'version': 2,
-        _SUPPORTED_RESOURCE_TYPES[resource_type]: [properties],
-    }
-    return header_dict
-
-
-def _get_property_column(column_name, resource=None):
-    """
-    Create a dictionary representing column properties
-
-    :param column_name: Name of column
-    :param resource: Name of the resource (model/table name)
-    :return: A dictionary representing column properties
-    """
-    from ruamel.yaml.scalarstring import PreservedScalarString
-    doc_reference = f"{resource}__{column_name}" if resource else column_name
-    column_dict = {
-        'name': column_name,
-        'description': PreservedScalarString(f'{{{{ doc("{doc_reference}") }}}}'),
-        'data_tests': []
-    }
-    return column_dict
+        content.extend([
+            "",  # One blank line before docs
+            f"{{% docs {resource_name}__{column} %}}",
+            "",
+            "{% enddocs %}",
+            ""  # One blank line after docs
+        ])
+    
+    return "\n".join(content)
 
 
 def _assert_supported_resource_type(resource_type):
@@ -909,3 +810,46 @@ def _assert_supported_resource_type(resource_type):
         )
         _LOGGER.exception(msg)
         raise
+
+
+def _read_md_file(file_path):
+    """
+    Read a markdown file and parse its content
+    
+    :param file_path: Path to the markdown file
+    :return: Dictionary containing the parsed content
+    """
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        return content
+    except FileNotFoundError:
+        return None
+
+
+def _write_md_file(file_path, content):
+    """
+    Write content to a markdown file
+    
+    :param file_path: Path to the markdown file
+    :param content: Content to write
+    """
+    with open(file_path, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+
+def _check_field_exists(content, field_name, resource_name):
+    """
+    Check if a field exists in the markdown content
+    
+    :param content: Markdown content
+    :param field_name: Name of the field to check
+    :param resource_name: Name of the resource
+    :return: Boolean indicating if field exists
+    """
+    pattern = rf"{{% docs {re.escape(resource_name)}__{re.escape(field_name)} %}}"
+    return bool(re.search(pattern, content)) if content else False
+
+
+
+
